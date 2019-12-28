@@ -1,6 +1,5 @@
 //! Asynchronous values.
 
-use core::cell::Cell;
 use core::marker::Unpin;
 use core::pin::Pin;
 use core::option::Option;
@@ -42,14 +41,17 @@ impl<T: Generator<Yield = ()>> Future for GenFuture<T> {
     }
 }
 
-#[thread_local]
-static TLS_CX: Cell<Option<NonNull<Context<'static>>>> = Cell::new(None);
+static mut TLS_CX: Option<NonNull<Context<'static>>> = None;
 
 struct SetOnDrop(Option<NonNull<Context<'static>>>);
 
 impl Drop for SetOnDrop {
     fn drop(&mut self) {
-        TLS_CX.set(self.0.take());
+        if let Some(val) = self.0.take() {
+            unsafe {
+                TLS_CX.replace(val);
+            }
+        }
     }
 }
 
@@ -63,7 +65,9 @@ where
     let cx = unsafe {
         core::mem::transmute::<&mut Context<'_>, &mut Context<'static>>(cx)
     };
-    let old_cx = TLS_CX.replace(Some(NonNull::from(cx)));
+    let old_cx = unsafe {
+        TLS_CX.replace(NonNull::from(cx))
+    };
     let _reset = SetOnDrop(old_cx);
     f()
 }
@@ -81,7 +85,7 @@ where
 {
     // Clear the entry so that nested `get_task_waker` calls
     // will fail or set their own value.
-    let cx_ptr = TLS_CX.replace(None);
+    let cx_ptr = unsafe {TLS_CX.take()};
     let _reset = SetOnDrop(cx_ptr);
 
     let mut cx_ptr = cx_ptr.expect(
